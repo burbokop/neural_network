@@ -1,0 +1,13 @@
+[package]
+name = "pure_deepdream"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+# serde-big-array = "0.4.1"
+serde_json = "1.0.82"
+rand = "0.8"
+image = "0.24"
+clap = { version = "3.2.15", features = ["derive"] }
+colored = "2.0.0"
