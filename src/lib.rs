@@ -1,22 +1,19 @@
 #![feature(generic_associated_types)]
 #![feature(option_get_or_insert_default)]
 #![feature(generic_const_exprs)]
+#![feature(try_trait_v2)]
 
 use std::f64::consts::E;
 
-mod arr;
-mod perceptron;
-mod layer;
+pub mod recursive;
+pub mod utilities;
+pub mod flat;
+mod neuralnet;
 mod trainer;
-mod loader;
-
-pub use {
-    arr::*,
-    perceptron::*,
-    layer::*,
-    trainer::*,
-    loader::*
-};
+pub use neuralnet::*;
+pub use trainer::*;
+use utilities::Arr;
+pub mod dataset;
 
 
 pub mod mormalizers {
@@ -25,6 +22,11 @@ pub mod mormalizers {
     pub fn sigmoid(x: f64) -> f64 {
         use std::f64::consts::E;
         1. / (1. + E.powf(-x))
+    }
+
+    pub fn inverted_sigmoid(x: f64) -> f64 {
+        use std::f64::consts::E;
+        -(1. / x - 1.).log(E)
     }
 
     pub fn sigmoid_derivative(y: f64) -> f64 { y * (1. - y) }

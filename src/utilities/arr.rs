@@ -1,4 +1,4 @@
-use std::{ops::{Sub, Add, Mul, Index, IndexMut, Deref}, iter::Sum};
+use std::{ops::{Sub, Add, Mul, Index, IndexMut, Deref, Try}, iter::Sum};
 
 use rand::{Rng, distributions::uniform::{SampleRange, SampleUniform}};
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,14 @@ impl<T, const SIZE: usize> Arr<T, SIZE> {
     {
         Arr(self.0.iter().map(f).collect())
     }
+
+    pub fn map_move<R, F>(self, f: F) -> Arr<R, SIZE>
+    where 
+        F: FnMut(T) -> R
+    {
+        Arr(self.0.into_iter().map(f).collect::<Vec<_>>())
+    }
+
 
     #[inline(always)]
     pub fn map_copy<R, F>(&self, mut f: F) -> Arr<R, SIZE>
@@ -174,5 +182,15 @@ impl<T, const SIZE: usize> From<[T; SIZE]> for Arr<T, SIZE> {
     #[inline(always)]
     fn from(value: [T; SIZE]) -> Self {
         Self(value.into())
+    }
+}
+
+impl<T, const SIZE: usize> IntoIterator for Arr<T, SIZE> {
+    type Item = T;
+
+    type IntoIter = <Vec<T> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
