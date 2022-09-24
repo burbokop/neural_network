@@ -58,7 +58,7 @@ impl TrainMnist {
 
         let trainer = Trainer { 
             learning_rate: 0.0002, 
-            stop_cost: 1., 
+            stop_cost: 1.,
             stop_ok_coef: 0.9,
             normalizer: mormalizers::sigmoid,
             normalizer_derivative: mormalizers::sigmoid_derivative,
