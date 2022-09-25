@@ -58,7 +58,10 @@ impl<const ISIZE: usize, const OSIZE: usize> YOLOv5Dataset<ISIZE, OSIZE> {
 
         let dir = yaml_path.parent().unwrap();
         let train_dir = dir.join(yaml.train);
-        let labels_dir = train_dir.join("../labels");
+        let labels_dir = train_dir.parent().unwrap().join("labels");
+
+        println!("loading training images from: {:?}", train_dir);
+        println!("loading training labels from: {:?}", labels_dir);
 
         Self { 
             data: Box::new(std::fs::read_dir(train_dir)
