@@ -1,58 +1,55 @@
 use std::sync::Arc;
 
 use vulkano::{
-    buffer::{BufferUsage, CpuAccessibleBuffer, BufferContents, cpu_access::{ReadLock, ReadLockError}},
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage},
+    VulkanLibrary,
+    buffer::{BufferUsage, CpuAccessibleBuffer, BufferContents, cpu_access::ReadLock, DeviceLocalBuffer},
+    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryCommandBuffer},
     descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet},
     device::{
-        physical::{PhysicalDevice, PhysicalDeviceType},
+        physical::PhysicalDeviceType,
         Device, DeviceCreateInfo, DeviceExtensions, QueueCreateInfo, Queue,
     },
     instance::{Instance, InstanceCreateInfo},
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
-    sync::{self, GpuFuture}, shader::{EntryPoint, ShaderModule}, memory::pool::{PotentialDedicatedAllocation, StdMemoryPoolAlloc},
+    sync::{self, GpuFuture}, shader::ShaderModule, memory::pool::{PotentialDedicatedAllocation, StandardMemoryPoolAlloc},
 };
 
-use crate::utilities::Arr;
-
 #[derive(Debug)]
-pub struct ComputeDevice<const DIMS: usize> {
+pub struct ComputeDevice {
     device: Arc<Device>,
     pipeline: Arc<ComputePipeline>,
     queue: Arc<Queue>
 }
 
-impl<const DIMS: usize> ComputeDevice<DIMS> {
+impl ComputeDevice {
     pub fn new<F: FnOnce(Arc<Device>) -> Arc<ShaderModule>>(glsl_src_factory: F) -> Self {
-        // As with other examples, the first step is to create an instance.
-        let instance = Instance::new(InstanceCreateInfo {
-            // Enable enumerating devices that use non-conformant vulkan implementations. (ex. MoltenVK)
-            enumerate_portability: true,
-            ..Default::default()
-        })
+        let library = VulkanLibrary::new().unwrap();
+        let instance = Instance::new(
+            library,
+            InstanceCreateInfo {
+                // Enable enumerating devices that use non-conformant vulkan implementations. (ex. MoltenVK)
+                enumerate_portability: true,
+                ..Default::default()
+            },
+        )
         .unwrap();
-
+    
         // Choose which physical device to use.
         let device_extensions = DeviceExtensions {
             khr_storage_buffer_storage_class: true,
-            ..DeviceExtensions::none()
+            ..DeviceExtensions::empty()
         };
-        let (physical_device, queue_family) = PhysicalDevice::enumerate(&instance)
-            .map(|d| { 
-                println!("device detected: {} (driver: {:?})", d.properties().device_name, d.properties().driver_name);
-                
-                for heap in d.memory_heaps() {
-                    println!("\tHeap #{:?} has a capacity of {:?} bytes", heap.id(), heap.size());
-                }
-                d 
-            })
-            .filter(|&p| p.supported_extensions().is_superset_of(&device_extensions))
+        let (physical_device, queue_family_index) = instance
+            .enumerate_physical_devices()
+            .unwrap()
+            .filter(|p| p.supported_extensions().contains(&device_extensions))
             .filter_map(|p| {
                 // The Vulkan specs guarantee that a compliant implementation must provide at least one queue
                 // that supports compute operations.
-                p.queue_families()
-                    .find(|&q| q.supports_compute())
-                    .map(|q| (p, q))
+                p.queue_family_properties()
+                    .iter()
+                    .position(|q| q.queue_flags.compute)
+                    .map(|i| (p, i as u32))
             })
             .min_by_key(|(p, _)| match p.properties().device_type {
                 PhysicalDeviceType::DiscreteGpu => 0,
@@ -60,26 +57,30 @@ impl<const DIMS: usize> ComputeDevice<DIMS> {
                 PhysicalDeviceType::VirtualGpu => 2,
                 PhysicalDeviceType::Cpu => 3,
                 PhysicalDeviceType::Other => 4,
+                _ => 5,
             })
             .unwrap();
-        
+    
         println!(
             "Using device: {} (type: {:?})",
             physical_device.properties().device_name,
             physical_device.properties().device_type
         );
-
+    
         // Now initializing the device.
         let (device, mut queues) = Device::new(
             physical_device,
             DeviceCreateInfo {
                 enabled_extensions: device_extensions,
-                queue_create_infos: vec![QueueCreateInfo::family(queue_family)],
+                queue_create_infos: vec![QueueCreateInfo {
+                    queue_family_index,
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         )
         .unwrap();
-
+    
         // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
         // example we use only one queue, so we just retrieve the first and only element of the
         // iterator and throw it away.
@@ -122,37 +123,57 @@ impl<const DIMS: usize> ComputeDevice<DIMS> {
     }
 
 
-    pub fn compute<T, II: IntoIterator<Item = T>, R, F: FnOnce(ReadLock<'_, [T], PotentialDedicatedAllocation<StdMemoryPoolAlloc>>) -> R>(&self, dims: [u32; DIMS], input_data: II, r: F) -> R
+    pub fn compute<T, II: IntoIterator<Item = T>, R, F: FnOnce(ReadLock<'_, [T], PotentialDedicatedAllocation<StandardMemoryPoolAlloc>>) -> R>(
+        &self, 
+        dims: [u32; 3], 
+        input_data: II, 
+        input_data_count: usize,
+        r: F
+    ) -> R
     where 
         [T]: BufferContents,
         <II as IntoIterator>::IntoIter: ExactSizeIterator {
- 
-        let dims_buffer = {
-            CpuAccessibleBuffer::from_data(
-                self.device.clone(),
-                BufferUsage {
-                    storage_buffer: true,
-                    ..BufferUsage::none()
-                },
-                false,
-                dims,
-            )
-            .unwrap()
-        };
-    
 
-        let data_buffer = {
-            CpuAccessibleBuffer::from_iter(
-                self.device.clone(),
-                BufferUsage {
-                    storage_buffer: true,
-                    ..BufferUsage::none()
-                },
-                false,
-                input_data.into_iter(),
-            )
+
+        let accessible_buffer = CpuAccessibleBuffer::from_iter(
+            self.device.clone(),
+            BufferUsage { transfer_src: true, transfer_dst: true, ..Default::default() },
+            false,
+            input_data.into_iter(),
+        )
+        .unwrap();
+     
+         // Create a buffer array on the GPU with enough space for `10_000` floats.
+        let device_local_buffer = DeviceLocalBuffer::<[T]>::array(
+            self.device.clone(),
+            input_data_count as u64,
+            BufferUsage { storage_buffer: true, transfer_dst: true, transfer_src: true, ..Default::default() },
+            self.device.active_queue_family_indices().iter().map(|a|*a),
+        )
+        .unwrap();
+     
+         // Create a one-time command to copy between the buffers.
+        let mut cbb = AutoCommandBufferBuilder::primary(
+            self.device.clone(),
+            self.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
+        cbb.copy_buffer(CopyBufferInfo::buffers(
+            accessible_buffer.clone(),
+            device_local_buffer.clone(),
+        ))
+         .unwrap();
+         let cb = cbb.build().unwrap();
+     
+         // Execute copy command and wait for completion before proceeding.
+        cb.execute(self.queue.clone())
             .unwrap()
-        };
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None /* timeout */)
+            .unwrap();
 
         // In order to let the shader access the buffer, we need to build a *descriptor set* that
         // contains the buffer.
@@ -166,8 +187,7 @@ impl<const DIMS: usize> ComputeDevice<DIMS> {
         let set = PersistentDescriptorSet::new(
             layout.clone(),
             [
-                WriteDescriptorSet::buffer(0, dims_buffer.clone()),
-                WriteDescriptorSet::buffer(1, data_buffer.clone())
+                WriteDescriptorSet::buffer(0, device_local_buffer.clone())
                 ],
         )
         .unwrap();
@@ -175,7 +195,7 @@ impl<const DIMS: usize> ComputeDevice<DIMS> {
         // In order to execute our operation, we have to build a command buffer.
         let mut builder = AutoCommandBufferBuilder::primary(
             self.device.clone(),
-            self.queue.family(),
+            self.queue.queue_family_index(),
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
@@ -195,7 +215,9 @@ impl<const DIMS: usize> ComputeDevice<DIMS> {
                 0,
                 set.clone(),
             )
-            .dispatch([1024, 1, 1])
+            .dispatch(dims)
+            .unwrap()
+            .copy_buffer(CopyBufferInfo::buffers(device_local_buffer, accessible_buffer.clone()))
             .unwrap();
         // Finish building the command buffer by calling `build`.
         let command_buffer = builder.build().unwrap();
@@ -230,7 +252,7 @@ impl<const DIMS: usize> ComputeDevice<DIMS> {
         // check it out.
         // The call to `read()` would return an error if the buffer was still in use by the GPU.
 
-        r(data_buffer.read().unwrap())
+        r(accessible_buffer.read().unwrap())
     }
 }
 

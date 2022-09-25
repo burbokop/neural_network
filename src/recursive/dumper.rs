@@ -1,11 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use image::{Rgba, Pixel, ImageBuffer};
+use image::{Rgba, ImageBuffer};
 
 use crate::NeuralNet;
-
-use super::Layer;
-
 
 pub struct ImageDumper {
 

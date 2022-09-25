@@ -2,12 +2,13 @@
 #![feature(generic_const_exprs)]
 #![feature(iterator_try_collect)]
 
-use std::{path::{PathBuf}, ops::DerefMut};
+use std::{path::{PathBuf}, ops::DerefMut, io::Write, time::Instant};
 
 
 
+use bytemuck::{Pod, Zeroable};
 use clap::Parser;
-use pure_deepdream::{utilities::{load_img_normalized_grayscale, Arr}, recursive::{ImageDumper, PerceptronLayer, InputLayer2d, Layer, RecNeuralNet, save_grayscale}, mormalizers, print_array, Trainer, NeuralNet, dataset::{YOLOv5Dataset, Dataset, MnistDataset}};
+use pure_deepdream::{utilities::{load_img_normalized_grayscale, Arr}, recursive::{ImageDumper, PerceptronLayer, InputLayer2d, Layer, RecNeuralNet, save_grayscale, computedevice::ComputeDevice}, mormalizers, print_array, Trainer, NeuralNet, dataset::{YOLOv5Dataset, Dataset, MnistDataset}};
 use serde::{Serialize, Deserialize};
 
 
@@ -160,6 +161,131 @@ impl Reverse {
     }
 }
 
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Dev {
+
+}
+
+impl Dev {
+    pub fn exec(self) {
+        use pure_deepdream::flat::connection::NetConnection;
+        use rand::thread_rng;
+
+        let conn = NetConnection::md(&[2, 3, 2]);
+
+        println!("conn: {:#.6?}", conn);
+
+        let gr = conn.into_graphics_representation().unwrap();
+
+        let units: Vec<_> = gr.0.collect();
+        let layers: Vec<_> = gr.1.collect();
+        let count = gr.2;
+
+        println!("units : {:#.6?}", units);
+        println!("layers: {:#?}", layers);
+        println!("count : {:?}", count);
+
+
+
+        let device = ComputeDevice::new(|device|{
+            mod cs {
+                vulkano_shaders::shader! {
+                    ty: "compute",
+                    src: "                    
+                        #version 450
+
+                        struct Vec3 {
+                            uint i;
+                            float x;
+                            float y;
+                            float z;
+                        };           
+
+                        layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+                        layout(set = 0, binding = 0) buffer Data {
+                            Vec3 data[];
+                        } data;
+
+                        layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+                        layout(set = 0, binding = 1) buffer FastData {
+                            Vec3 data[];
+                        } fast_data;
+
+
+                        void main() {                                      
+                            uint i = gl_LocalInvocationIndex;
+
+                            data.data[i].i = i;                            
+                            data.data[i].x = log2(i * 1);                            
+                            data.data[i].y = i * 2;                            
+                            data.data[i].z = i * 3;              
+                            
+                            float c = 0;
+                            for (int j = 0; j < 2000; j++) {
+                                data.data[i].x += (data.data[i].y * data.data[i].z);
+                            }
+                        }
+                    "
+                }
+            }
+            cs::load(device.clone()).unwrap()
+        });
+
+
+        #[repr(C)]
+        #[derive(Copy, Clone, Default, Debug, Pod, Zeroable)]
+        struct Vec3 {
+            pub i: u32,
+            pub x: f32,
+            pub y: f32,
+            pub z: f32,
+        }
+
+        let mut data: Vec<_> = (0..(64)).map(|_| Vec3::default()).collect();
+
+        let cpu_inst = Instant::now();
+        for i in 0..data.len() {
+            data[i].i = i as u32;
+            data[i].x = (i as f32 * 1.).log2();                            
+            data[i].y = (i as f32 * 2.).log2();                            
+            data[i].z = (i as f32 * 3.).log2();
+            
+            let mut c = 0.;
+            for _ in 0..2000 {
+                c += data[i].y * data[i].z;
+            }
+            data[i].x = c;
+        }
+
+        let cpu_duration = cpu_inst.elapsed();
+        println!("cpu elapsed: {:?}", cpu_duration);
+
+        let len = data.len();
+        let gpu_inst = Instant::now();
+        let res = device.compute(
+            [1024, 1, 1], 
+            data.into_iter(), 
+            len,
+            |r| r.to_vec()
+        );
+
+        let gpu_duration = gpu_inst.elapsed();
+        println!("gpu elapsed: {:?}", gpu_duration);
+
+        let profit = (cpu_duration.as_millis() as f64) / (gpu_duration.as_millis() as f64);
+        println!("profit: {:.2}", profit);
+
+        //res;
+
+        println!("res:");
+        for r in res {
+            println!("\t{:?}", r)
+        }
+
+    }
+}
+
 
 #[derive(Parser)]
 enum SubCommand {
@@ -167,7 +293,8 @@ enum SubCommand {
     TrainMnist(TrainMnist),
     TrainYolov5(TrainYolov5),
     Dump(Dump),
-    Reverse(Reverse)
+    Reverse(Reverse),
+    Dev(Dev)
 }
 
 fn new_ships_nn<'de>() -> impl NeuralNet<249600, 10> + Serialize + Deserialize<'de> {
@@ -202,7 +329,8 @@ fn main() {
         SubCommand::TrainMnist(train) => train.exec(),
         SubCommand::TrainYolov5(train) => train.exec(),
         SubCommand::Dump(dump) => dump.exec(),
-        SubCommand::Reverse(rev) => rev.exec()
+        SubCommand::Reverse(rev) => rev.exec(),
+        SubCommand::Dev(dev) => dev.exec()
     }
 
 

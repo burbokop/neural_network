@@ -4,7 +4,6 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Serialize, Deserialize};
 
 use crate::utilities::{Arr, Perceptron};
-use rayon::prelude::*;
 use super::computedevice::ComputeDevice;
 
 pub trait Layer<const INPUT_COUNT: usize, const COUNT: usize> {
@@ -25,7 +24,7 @@ pub struct PLayerCtx<const INPUT_ACTIVATIONS_COUNT: usize, const OUTPUT_ACTIVATI
 
 
 #[derive(Debug)]
-pub struct BackpropagationComputeDevice (ComputeDevice<2>);
+pub struct BackpropagationComputeDevice (ComputeDevice);
 
 impl Default for BackpropagationComputeDevice {
     fn default() -> Self {
@@ -148,7 +147,6 @@ impl<const INPUT_COUNT: usize, const COUNT: usize, const ACTIVATIONS_COUNT: usiz
                 // l2 338.86µs
                 // l1 1.981351ms
                 // l0 394.189721ms
-
                 
                 let instant_copy = Instant::now();
 
@@ -158,7 +156,7 @@ impl<const INPUT_COUNT: usize, const COUNT: usize, const ACTIVATIONS_COUNT: usiz
                     let out_act = ctx.output_activations[i];
                     let perceptron = &self.perceptrons[i];
                     for j in 0..ACTIVATIONS_COUNT {
-                        qs.push(QQQ { 
+                        qs.push(QQQ {
                             err: error as f32,
                             oa_to_gradient: out_act as f32,
                             weight_to_delta: perceptron.weights()[j] as f32,
@@ -169,7 +167,7 @@ impl<const INPUT_COUNT: usize, const COUNT: usize, const ACTIVATIONS_COUNT: usiz
 
                 println!("len: {}, bytes: {}", qs.len(), qs.len() * std::mem::size_of::<QQQ>());
 
-                let r = device.0.compute([COUNT as u32, ACTIVATIONS_COUNT as u32], qs, |r| r.to_vec());
+                //let r = device.0.compute([COUNT as u32, ACTIVATIONS_COUNT as u32, 0], qs, 0, |r| r.to_vec());
 
                 println!("gradient calculus time: {:?}", instant.elapsed());
 
@@ -182,7 +180,7 @@ impl<const INPUT_COUNT: usize, const COUNT: usize, const ACTIVATIONS_COUNT: usiz
                     for i in 0..COUNT {
                         for j in 0..ACTIVATIONS_COUNT {
                             let idx = i * ACTIVATIONS_COUNT + j;
-                            let q = &r[idx];
+                            let q = QQQ::default();// &r[idx];
 
                             gradient[i] = q.oa_to_gradient as f64;
                             deltas[i][j] = q.weight_to_delta as f64;
